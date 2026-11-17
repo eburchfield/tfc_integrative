@@ -1,0 +1,15 @@
+crop,variable,in_model,median_present,rel_at_cap_share,rel_at_cap_Bweighted,abs_at_bound_share,abs_at_bound_Bweighted,median_abs_as_relative_pct,N_reproduces_maxdiff
+CORN,no_ops_sales_lt_10k,True,0.2654,0.0,0.0,0.1708,0.2015,-45.1822,
+CORN,sales_usd_gt_500k,True,0.7054,0.154,0.1501,0.1253,0.1192,15.1303,0.0
+SOY,no_ops_sales_lt_10k,True,0.2654,0.0,0.0,0.1708,0.1902,-45.1822,
+SOY,sales_usd_gt_500k,True,0.7054,0.154,0.1582,0.1253,0.1261,15.1303,0.0
+COTTON,no_ops_sales_lt_10k,True,0.2654,0.0,0.0,0.1708,0.1345,-45.1822,
+COTTON,sales_usd_gt_500k,True,0.7054,0.154,0.2808,0.1253,0.255,15.1303,0.0
+PEANUTS,no_ops_sales_lt_10k,True,0.2654,0.0,0.0,0.1708,0.0662,-45.1822,
+PEANUTS,sales_usd_gt_500k,True,0.7054,0.154,0.3166,0.1253,0.2849,15.1303,0.0
+HAY,no_ops_sales_lt_10k,True,0.2654,0.0,0.0,0.1708,0.126,-45.1822,
+HAY,sales_usd_gt_500k,True,0.7054,0.154,0.1385,0.1253,0.11,15.1303,0.0
+WHEAT,no_ops_sales_lt_10k,True,0.2654,0.0,0.0,0.1708,0.2043,-45.1822,
+WHEAT,sales_usd_gt_500k,True,0.7054,0.154,0.1685,0.1253,0.1432,15.1303,0.0
+SORGHUM,no_ops_sales_lt_10k,True,0.2654,0.0,0.0,0.1708,0.2204,-45.1822,
+SORGHUM,sales_usd_gt_500k,True,0.7054,0.154,0.1912,0.1253,0.1643,15.1303,0.0

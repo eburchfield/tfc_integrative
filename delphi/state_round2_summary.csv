@@ -1,0 +1,34 @@
+state,item,unit,present_value,n,median_2050,q1_2050,q3_2050,cov,relative_change_pct
+GA,Certified organic,% of cropland,0.12,12,1.0,0.7925,1.0775,1.0969,733.3333
+GA,Conservation tillage,% of cropland,67.3,12,75.0,70.0,75.0,0.1278,11.4413
+GA,Cover crops,% of cropland,10.9,12,20.0,15.0,21.0,0.3084,83.4862
+GA,Cropland irrigated,%,34.6,12,44.0,40.0,46.25,0.1526,27.1676
+GA,Irrigation water applied,"1,000 acre-ft",1299.0,12,1798.0,1500.75,2449.0,0.4948,38.4142
+GA,N from manure,% of N applied,51.0,12,52.5,50.0,55.0,0.1216,2.9412
+GA,N rate (cotton),lb/acre,121.0,12,120.0,103.25,140.5,0.2832,-0.8264
+GA,P from manure,% of P applied,61.0,12,60.0,51.5,61.0,0.13,-1.6393
+GA,P rate (cotton),lb/acre,59.0,12,60.0,57.75,60.25,0.1626,1.6949
+GA,Vegetables share,% of harvested cropland,2.4,12,4.35,3.875,5.125,0.4372,81.25
+GA,Withdrawals from groundwater,%,83.0,12,85.0,84.0,85.5,0.0464,2.4096
+NE,Certified organic,% of cropland,0.53,16,1.0,0.575,1.025,1.702,88.6792
+NE,Conservation tillage,% of cropland,89.1,16,93.0,90.0,95.0,0.0445,4.3771
+NE,Cover crops,% of cropland,4.4,16,10.0,8.75,21.25,0.9356,127.2727
+NE,Cropland irrigated,%,43.6,16,44.5,42.5,46.25,0.1471,2.0642
+NE,Irrigation water applied,"1,000 acre-ft",6814.0,16,6257.5,4587.5,7052.5,0.2532,-8.167
+NE,N from manure,% of N applied,30.0,16,42.0,30.0,48.5,0.283,40.0
+NE,N rate (corn),lb/acre,160.0,16,150.0,137.5,150.25,0.1153,-6.25
+NE,P from manure,% of P applied,45.0,16,42.0,34.5,45.25,0.1765,-6.6667
+NE,P rate (corn),lb/acre,52.0,15,44.0,40.0,50.0,0.2027,-15.3846
+NE,Sorghum share,% of harvested cropland,0.8,16,2.75,1.925,6.25,0.877,243.75
+NE,Withdrawals from groundwater,%,94.0,16,94.0,90.0,94.0,0.0321,0.0
+OH,Certified organic,% of cropland,0.8,14,2.25,1.35,2.5,0.4755,181.25
+OH,Conservation tillage,% of cropland,81.4,14,85.0,80.0,85.0,0.0882,4.4226
+OH,Cover crops,% of cropland,7.1,14,17.5,11.25,20.0,0.2777,146.4789
+OH,Cropland irrigated,%,0.7,14,5.0,3.0,9.85,0.6576,614.2857
+OH,Irrigation water applied,"1,000 acre-ft",35.0,14,82.5,60.0,128.75,1.0992,135.7143
+OH,N from manure,% of N applied,26.0,14,28.5,25.0,34.75,0.1864,9.6154
+OH,N rate (corn),lb/acre,160.0,14,162.5,151.25,179.75,0.103,1.5625
+OH,P from manure,% of P applied,37.0,14,38.0,30.5,41.5,0.4559,2.7027
+OH,P rate (corn),lb/acre,74.0,14,70.0,61.0,73.75,0.1474,-5.4054
+OH,Wheat share,% of harvested cropland,4.9,14,5.6,4.925,7.6,0.3398,14.2857
+OH,Withdrawals from groundwater,%,62.0,14,70.0,68.5,75.0,0.0972,12.9032

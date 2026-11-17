@@ -1,0 +1,1219 @@
+---
+title: "Data construction: Cultivation Geographies"
+author: "Dr. Emily Burchfield"
+date: "Last updated: `r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    theme: flatly
+    toc: yes
+    toc_float: true
+---
+
+```{r message=F, warning=F, echo=F, results="hide"}
+knitr::opts_chunk$set(eval = FALSE)
+setwd("G:/")
+source("DISES_load.R")
+source("DISES_func_new.R")
+```
+
+***
+
+# Construct Crop Absense/Presence
+
+This document describes the data and scripts used to construct the presence/absence panels used to calibrate historical crop suitability models and project future suitability. We define each crop's presence/absence using the following categories from the [USDA Cropland Data Layer](https://nassgeodata.gmu.edu/CropScape/):
+
+* See `cdl_list` in `DISES_load.R` for list of crops and the CDL codes used to classify crops
+
+## Masking the CDL data
+
+* 2010 to 2019 to give a clean decade and to leave some held out data in time for testing
+* The CDL rasters are big, so I have split them into states to speed up processing. I masked lands outside of state boundaries to avoid double-counting pixels in the sampling.
+* We compute presence/absence within the suite of AGRICULTURAL pixels. Masked all non-agricultural categories based on the CDL designation [here](https://www.nass.usda.gov/Research_and_Science/Cropland/metadata/metadata_Cultivated-Layer-2023.htm), but we include as agriculture Hay/Non Alfalfa (37), Sod/Grass Seed (59), Grass/Pasture (176) since we're interested in these land use categories and their transition to other crops.
+
+Rationale for focusing on agricultural pixels only:
+
+* Why mask non-agricultural categories? First, to be more honest about how the models perform at predicting cropping outcomes. Also, conceptually it made sense to me -- we're less interested in the pressures of agricultural expansion, contraction, and more interested in -- *given agricultural land* -- what cropping outcomes are possible? So our models are answering the question: within fairly "persistent" agricultural lands, how do we predict (and eventually explain) what is grown in a particular place? 
+
+## Sampling from CDL data
+
+Now, given this mask, I want to randomly sample agricultural pixels from across the entire population of agricultural land in the Central and Eastern U.S. There are 2,266,346,504 agricultural pixels--or pixels that have always been in agricultural production from 2019-2020--in our ROI. 
+
+* 5% = 113317325
+* 1% = 22663465
+* Note that I ended up sampling 10% in each state.
+
+For each of the crop categories listed above, I counted the number of instances that category occurred from 2010 to 2020 and defined presence/absence as follows:
+
+* `Presence`:  The crop was planted in this pixels at least **twice** from 2010 to 2019. This helps to eliminate classification error in the CDL.
+* `Absence`: The crop was *never* planted in this pixel from 2010 to 2019.
+
+I dropped pixels within one km of each other to avoid double sampling predictors.
+
+```{r eval=F}
+# To build this data on your own, download all of the NATIONAL CDL rasters, https://www.nass.usda.gov/Research_and_Science/Cropland/Release/index.php
+# Then write_states() split national CDL rasters downloaded from the CDL website into state stacks
+
+# GLOBALS
+state_names <- unique(states$STATE_NAME)
+state_names <- state_names[!state_names == "District of Columbia"] # drop DC, too few agricultural pixels
+prop_pix <- 0.10 # randomly sample 10% of agricultural raster pixels into data.frame
+sample <- readRDS("./out/state_sample_size.RDS") # built in DISES_clean.R
+sample$N <- round(prop_pix * as.numeric(sample$AG)) # sampling 10 % of agricultural pixels randomly in each state
+
+#######################################################################################
+# Mask rasters for non-agricultural categories and crop to state boundaries
+
+for (i in 1:length(state_names)) {
+  
+  state_name <- state_names[i]
+  print(state_name)
+  shp <- states %>% filter(STATE_NAME == state_name)
+
+  # BUILD DATA  
+  print("Loading data...")
+  state_name <- ifelse(state_names[i] == "Virginia", "_Virginia", state_names[i])
+  flist <- sort(Sys.glob(paste0("C:/Users/eburchf/Desktop/Data/CDL/States/*", state_name, ".grd"))) # stored in cdl_states
+  stack <- rast(flist[3:12]) # 2010-2019, like WorldClim; one decade, allows for hold-out data 
+  crs(stack) <- "epsg:5070"
+  names(stack) <- str_split(names(stack), "_30", simplify=T)[,1]
+  state_name <- ifelse(state_name == "_Virginia", "Virginia", state_names[i])
+  
+  # APPLY STATE AND AG MASKS  
+  print("Masking data....")
+  masked <- crop(stack, shp, mask=T)
+  remove(stack, flist, shp)
+  masked[masked %in% non_ag] <- NA
+  
+  # SAVE RASTER
+  print("Saving data....")
+  writeRaster(masked, paste0("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/ag_mask_state/", state_name, ".tif"), overwrite=T) # in /data folder
+  
+}
+
+#########################################################################################################################
+# Now, with pre-processed rasters, randomly sample pixels (as constant 10% of agricultural land) 
+# Create absence/presence data for all crops based on this random sample
+
+for (i in 1:length(state_names)) {
+  
+  state_name <- state_names[i]
+  print(state_name)
+  
+  masked <- rast(paste0("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/ag_mask_state/", state_name, ".tif"))
+  n <- sample %>% filter(STATE == state_name) %>% pull(N)
+
+  # n <- 1000000 # for Texas and FL, sample size will be a bit smaller b/c of exhaustive search; 
+  # TX and FL undersampled, but they have really different climates, so OK with this
+  
+  # SAMPLE RANDOM POINTS  
+  print("Making data.frame....")
+  sample_df <- spatSample(masked, size = n, method = "random", as.df = T, 
+                          na.rm = T, xy = T, values = T, exhaustive = F) # set ext to F for Texas, Florida and Michigan
+  sample_df$STATE <- state_name
+  rownames(sample_df) <- NULL
+  
+  print("Saving RDS...")
+  saveRDS(sample_df, paste0("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/", state_name, "_RS_10p.RDS")) # data.frame with 10% of agricultural pixels
+  remove(sample_df, masked)
+  gc()
+  
+}
+
+
+##################################################################################################################
+# Now, from the 10% larger sample, generate crop-specific data.frames of count of occurrence through time with 200K pixels
+# NA.RM for TX and FL
+
+lulc_list <- Sys.glob("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/*_RS_10p.RDS") # add _RS
+
+lulc_list <- c(lulc_list[16], lulc_list[5], lulc_list[33])
+
+for (i in 1:length(lulc_list)) {
+  
+  print(paste0("Loading data for ", lulc_list[i]))
+  st <- readRDS(lulc_list[i]) 
+  
+  print("Counting crops for sample...")
+  for (c in 1:length(cdl_list)) {
+    st[,names(cdl_list)[[c]]] <- rowSums(sapply(st, `%in%`, cdl_list[[c]]))
+  }
+
+  print("Cleaning and saving...")
+  st <- st %>% select(STATE, names(cdl_list), x, y)
+  saveRDS(st, paste0("./out/state_ap/",st$STATE[1], ".RDS"))
+  
+}
+
+#######################################################################################
+# build crop-specific AP data from random sample of agricultural lands
+# 10K presence (more than 2x), 10K absence, drop any missing data, drop points within one KM of one avoid to avoid oversampling
+
+ap <- list.files(path = "./out/state_ap/", pattern = ".RDS", full.names=T) %>%
+  map_dfr(readRDS) # big boi, too big nearly 60 GB
+
+# build AP for one crop
+seed <- 888
+apn <- 250000
+# peacans, barley, rye stuck with 100K
+
+crop_names <- c("PECANS","BARLEY", "RYE")
+
+for (i in 1:length(crop_names)) {
+  
+  cn <- crop_names[i]
+  print(paste0("Writing out ", cn))
+  prep_ap(ap_df = ap, crop_name = cn, apn = apn, seed = seed)
+  
+}
+
+```
+
+***
+
+
+*** 
+
+# Extract Biophysical Predictors
+
+## Historical WorldClim
+
+For the historical data, I downloaded the historical monthly weather data [here](https://www.worldclim.org/data/monthlywth.html) (sadly, highest resolution is 2.5 minutes, this limits future analyses to the same resolution for consistency, ~5 km at equator). From the annual stacks of this monthly data, I computed the `biovars` variables from the `dismo` package (see full list and description [here](https://www.worldclim.org/data/bioclim.html)).  This makes sense because these are also easily available in the future climate projections provided by the WorldClim group: 
+
+
+
+
+```{r eval=F}
+library(dismo)
+library(raster)
+
+#######################################################################################
+# Computing annual biovars
+# I didn't use their pre-built historical climate data biovars b/c it's for the period from 1970 to 2000
+# instead I used the Historical monthly weather data from 2010-2019 since this aligns with the CDL data
+
+wcdir <- "C:/Users/eburchf/Desktop/Data/WorldClim/"
+years <- 2010:2019
+
+for (i in 1:length(years)) {
+  
+  year <- years[i]
+  print(year)
+  ppt <- rast(Sys.glob(paste0(wcdir, "ppt/*", year, "*.tif")))
+  tmin <- rast(Sys.glob(paste0(wcdir, "tmin/*", year, "*.tif")))
+  tmax <- rast(Sys.glob(paste0(wcdir, "tmax/*", year, "*.tif")))
+  
+  roi_crs <- vect(st_transform(roi, crs(ppt)))
+  
+  ppt <- crop(ppt, roi_crs, mask=T)
+  tmin <- crop(tmin, roi_crs, mask=T)
+  tmax <- crop(tmax, roi_crs, mask=T)
+  
+  # rasters required for dismo, surprisingly
+  ppt <- stack(ppt)
+  tmin <- stack(tmin)
+  tmax <- stack(tmax)
+  
+  bv <- biovars(ppt, tmin, tmax)
+  bv <- rast(bv)
+  
+  # apply names here: https://www.worldclim.org/data/bioclim.html
+  names(bv) <- c("BV1_Annual_Mean_Temp", "BV2_Mean_Diurnal_Range", "BV3_Isothermality", "BV4_Temp_Seasonality",
+                "BV5_MaxTemp_Warm_Month", "BV6_MinTemp_Cold_Month", "BV7_Temp_Annual_Range", "BV8_MeanTemp_Wet_Quart",
+                "BV9_MeanTemp_Driest_Quart", "BV10_MeanTemp_Warm_Quart", "BV11_MeanTemp_Cold_Quart",
+                "BV12_Annual_Precip", "BV13_Precip_Wet_Month", "BV14_Precip_Dry_Month", "B15_CoV_Precip", 
+                "B16_Precip_Wet_Quart", "B17_Precip_Dry_Quart", "B18_Precip_Warm_Quart", "B19_Precip_Cold_Quart")
+  
+  
+  writeRaster(bv, paste0(wcdir, "biovars_2010_2019/b", year, ".tif"))
+  
+}
+
+```
+
+Then, since I'm working with agricultural persistence over a decade, I want not annual biovar data, but decadal climate. To do this, I averaged the annual biovar data for the period from 2010 to 2019. 
+
+```{r eval=F}
+#######################################################################################
+# Computing average/sd biovars from 2010-2019
+wcdir <- "C:/Users/eburchf/Desktop/Data/WorldClim/"
+biovars <- Sys.glob(paste0(wcdir, "biovars_2010_2019/b*.tif"))
+
+for (i in 1:19) {
+  
+  x <- list()
+  
+  for (b in 1:length(biovars)) {
+    bvr <- rast(biovars[b])[[i]] # make sure it keeps name and CRS?
+    x[[b]] <- bvr 
+  }
+  
+  x <- rast(x)
+  mn <- app(x, fun = mean)
+  sdev <- app(x, fun = sd)
+  
+  bv_name <- names(x)[1]
+  names(mn) <- bv_name
+  names(sdev) <- bv_name
+  
+  writeRaster(mn, paste0(wcdir, "biovars_avg/", bv_name, ".tif"), overwrite=T)
+  writeRaster(sdev, paste0(wcdir, "biovars_sd/", bv_name, ".tif"), overwrite=T)
+  remove(mn, sdev, x)
+  
+}
+
+allvb <- rast(Sys.glob(paste0(wcdir, "biovars_avg/*.tif")))
+writeRaster(allvb, "./out/hpredictors/hist_biovars.tif", overwrite=T)
+```
+
+Citations for this data:
+
+* CRU-TS 4.06 (Harris et al., 2020) downscaled with WorldClim 2.1 (Fick and Hijmans, 2017).
+* Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37 (12): 4302-4315.
+* Harris, I., Osborn, T.J., Jones, P.D., Lister, D.H. (2020). Version 4 of the CRU TS monthly high-resolution gridded multivariate climate dataset. Scientific Data 7: 109
+
+## Future WorldClim
+
+Use the same projection (WGS84) and resolution (2.5 min) as the historical data for consistency... the only issue is that the historical is a decade and this data is provided in 20-year chunks; need to think through implications.
+
+**Future climate projections** came from the [WorldClim group.](https://www.worldclim.org/data/cmip6/cmip6climate.html) (2/5 projections).  These projections are monthly values over 20 year periods (2021-2040; 2041-2060; 2061-2080; 2081-2100).  From these monthly tmin, tmax, and ppt projections, WorldClim has computed the same `biovars`, so the process is the same as the historical aggregation, but the future projections come from CMIP6 while the historical climate data comes from the Climatic Research Unit, University of East Anglia, using WorldClim 2.1 for bias correction.  It looks like the data comes as summaries (by month if raw data or as the biovar variables) for a twenty-year period, so a sort of average of each parameter over this time range. From website: "The monthly values were averaged over 20 year periods (2021-2040, 241-2060, 2061-2080, 2081-2100)." The historical data is built from one decade (2010-2019) and from the Climatic Research Unit, University of East Anglia, using WorldClim 2.1 for bias correction... rather than the CMIP6 models... so this might cause some issues in comparison. 
+
+* Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37 (12): 4302-4315.
+
+Here's a list of the `biovars`:
+
+* bio1 = Mean annual temperature
+* bio2 = Mean diurnal range (mean of max temp - min temp)
+* bio3 = Isothermality (bio2/bio7) (* 100)
+* bio4 = Temperature seasonality (standard deviation *100)
+* bio5 = Max temperature of warmest month
+* bio6 = Min temperature of coldest month
+* bio7 = Temperature annual range (bio5-bio6)
+* bio8 = Mean temperature of the wettest quarter
+* bio9 = Mean temperature of driest quarter
+* bio10 = Mean temperature of warmest quarter
+* bio11 = Mean temperature of coldest quarter
+* bio12 = Total (annual) precipitation
+* bio13 = Precipitation of wettest month
+* bio14 = Precipitation of driest month
+* bio15 = Precipitation seasonality (coefficient of variation)
+* bio16 = Precipitation of wettest quarter
+* bio17 = Precipitation of driest quarter
+* bio18 = Precipitation of warmest quarter 
+* bio19 = Precipitation of coldest quarter
+
+
+```{r eval=F}
+##########################################################################################################
+# Trim big-ass global data down to ROI
+
+bvlist <- Sys.glob(paste0("D:/WC_lores/future/*.grd")) # direct download, went ahead and pulled biovars built from monthly data
+
+for (i in 1:length(bvlist)) {
+  
+  print(bvlist[i])
+  bv <- rast(bvlist[i])
+  nm <- substr(bvlist[i], 29, nchar(bvlist[i])-4)
+  print(nm)
+  roi_crs <- vect(st_transform(roi, crs(bv)))
+  print("Croping raster...")
+  bv <- crop(bv, roi_crs, mask=T)  
+  names(bv) <- c("BV1_Annual_Mean_Temp", "BV2_Mean_Diurnal_Range", "BV3_Isothermality", "BV4_Temp_Seasonality",
+                  "BV5_MaxTemp_Warm_Month", "BV6_MinTemp_Cold_Month", "BV7_Temp_Annual_Range", "BV8_MeanTemp_Wet_Quart",
+                  "BV9_MeanTemp_Driest_Quart", "BV10_MeanTemp_Warm_Quart", "BV11_MeanTemp_Cold_Quart",
+                  "BV12_Annual_Precip", "BV13_Precip_Wet_Month", "BV14_Precip_Dry_Month", "B15_CoV_Precip", 
+                  "B16_Precip_Wet_Quart", "B17_Precip_Dry_Quart", "B18_Precip_Warm_Quart", "B19_Precip_Cold_Quart")
+    
+  print("Writing raster...")
+  writeRaster(bv, paste0("D:/WorldClim/future_bv/", nm, ".tif"), overwrite=T)
+  
+}
+
+##########################################################################################################
+# Create ensemble average of predictions by biovar
+
+scens <- c("ssp245_2021-2040", "ssp245_2041-2060", "ssp245_2061-2080", "ssp245_2081-2100",
+           "ssp370_2021-2040", "ssp370_2041-2060", "ssp370_2061-2080", "ssp370_2081-2100",
+           "ssp585_2021-2040", "ssp585_2041-2060", "ssp585_2061-2080", "ssp585_2081-2100")
+
+bvnames <- c("BV1_Annual_Mean_Temp", "BV2_Mean_Diurnal_Range", "BV3_Isothermality", "BV4_Temp_Seasonality",
+                  "BV5_MaxTemp_Warm_Month", "BV6_MinTemp_Cold_Month", "BV7_Temp_Annual_Range", "BV8_MeanTemp_Wet_Quart",
+                  "BV9_MeanTemp_Driest_Quart", "BV10_MeanTemp_Warm_Quart", "BV11_MeanTemp_Cold_Quart",
+                  "BV12_Annual_Precip", "BV13_Precip_Wet_Month", "BV14_Precip_Dry_Month", "B15_CoV_Precip", 
+                  "B16_Precip_Wet_Quart", "B17_Precip_Dry_Quart", "B18_Precip_Warm_Quart", "B19_Precip_Cold_Quart")
+
+# for each scenario/year combination, make ensemble result
+
+for (p in 1:length(scens)) {
+  
+  bv_list <- Sys.glob(paste0("D:/WC_lores/future/CS_grids/*", scens[p], ".grd"))
+  print(paste0(scens[p], " -- length is ", length(bv_list))) # always 3
+  allbv <- list()
+
+  for (i in 1:19) {
+  
+    x <- list()
+  
+    for (f in 1:length(bv_list)) {
+      bvr <- rast(bv_list[f])
+      bvrs <- bvr[[i]]
+      names(bvrs) <- bv_list[f]
+      x[[f]] <- bvrs
+    }
+  
+    print(paste0("Calculating mean for ", bvnames[i]))
+    mn <- mean(rast(x), na.rm=T)
+    names(mn) <- bvnames[i]
+    allbv[[i]] <- mn
+    remove(x, mn)
+  
+  }
+  
+  out <- rast(allbv)
+  names(out) <- bvnames
+
+  writeRaster(out, paste0("D:/WC_lores/future/CS_ens/", scens[p], ".tif"), overwrite=T) # made copy in ./out/fpredictors of this final ensemble product
+
+}
+
+```
+ Predictors
+## HWSD
+
+Given the size of this data and the complexities of wrangling it, it made more sense to focus on the [Harmonized World Soils Database, v2](https://www.fao.org/soils-portal/data-hub/soil-maps-and-databases/harmonized-world-soil-database-v20/en/) which is a 1 km dataset available globally. Technical report [here](https://www.fao.org/3/cc3823en/cc3823en.pdf).
+
+More on specific variables in data [here](https://daac.ornl.gov/SOILS/guides/HWSD.html).
+
+```{r eval=F}
+library(hwsdr)
+
+# downloaded rasters here: https://daac.ornl.gov/cgi-bin/dsviewer.pl?ds_id=1247
+hwsd_list <- Sys.glob("C:/Users/eburchf/OneDrive - Emory University/Data/HWSD/*.nc4") 
+hwsd <- rast(hwsd_list[1])
+# processing for DISES roi
+state_list <- c("ME", "NH", "VT", "MA", "RI", "CT", "NY", "PA", "NJ", "DE", "MD", "WV", "VA", "NC", "SC", "KY",
+                "OH", "MI", "WI", "IA", "MN", "MO", "TN", "GA", "AL", "MS", "LA", "AR", "KS", "OK", 
+                "TX", "ND", "NE", "SD", "IL", "IN", "FL", "DC")
+states <- st_read("C:/Users/eburchf/OneDrive - Emory University/Data/SHP/National/states.shp") %>% filter(STATE_ABBR %in% state_list)
+states <- st_transform(states, crs(hwsd))
+roi <- vect(st_transform(st_union(states), crs(hwsd)))
+
+# raster extents don't match, so have to do this the long way
+out <- list()
+hwsd_list <- hwsd_list[5:28]
+for (i in 1:length(hwsd_list)) {
+  print(i)
+  h <- rast(hwsd_list[i])
+  h <- crop(h, roi, mask=T)
+  writeRaster(h, paste0("C:/Users/eburchf/OneDrive - Emory University/Data/HWSD/", names(h), ".tif"), overwrite=T)
+  out[[i]] <- h
+}
+
+# https://daac.ornl.gov/SOILS/guides/HWSD.html
+all_hwsd <- rast(Sys.glob("C:/Users/eburchf/OneDrive - Emory University/Data/HWSD/*.tif"))
+my_hwsd <- all_hwsd[[c("T_BULK_DEN", "S_BULK_DEN",
+                       "T_CEC_CLAY", "S_CEC_CLAY",
+                       "T_CLAY", "S_CLAY",
+                       "T_GRAVEL", "S_GRAVEL",
+                       "T_SAND", "S_SAND",
+                       "T_SILT", "S_SILT",
+                       "T_PH_H2O", "S_PH_H2O",
+                       "t_c", "s_c",
+                       "T_OC", "S_OC")]]
+                       
+writeRaster(my_hwsd, "./out/hpredictors/hwsd.tif")
+```
+
+Citations for data:
+
+* Wieder, W.R., J. Boehnert, G.B. Bonan, and M. Langseth. 2014. Regridded Harmonized World Soil Database v1.2. Data set. Available on-line [http://daac.ornl.gov] from Oak Ridge National Laboratory Distributed Active Archive Center, Oak Ridge, Tennessee, USA. http://dx.doi.org/10.3334/ORNLDAAC/1247.
+* Fischer, G., F. Nachtergaele, S. Prieler, H.T. van Velthuizen, L. Verelst, D. Wiberg, 2008. Global Agro-ecological Zones Assessment for Agriculture (GAEZ 2008). IIASA, Laxenburg, Austria and FAO, Rome, Italy. 
+* Package in R: Wieder, W.R., J. Boehnert, G.B. Bonan, and M. Langseth. 2014. Regridded Harmonized World Soil Database v1.2. Data set. Available on-line from Oak Ridge National Laboratory Distributed Active Archive Center, Oak Ridge, Tennessee, USA. (https://daac.ornl.gov/cgi-bin/dsviewer.pl?ds_id=1247).
+
+Notes on other soil datasets:
+
+* Though [gSSURGO](https://www.nrcs.usda.gov/wps/portal/nrcs/detail/soils/home/?cid=nrcs142p2_053628) and [gNATSGO](https://nrcs.app.box.com/v/soils/folder/108071141504) are start-of-the-art in the US, none of the other datasets are at this high 30 meter resolution, so I'd end up resampling anyways and coarsening this data.^[Download data [here](https://gdg.sc.egov.usda.gov/GDGOrder.aspx?order=QuickState).  Also available is the [gNATSGO](https://nrcs.app.box.com/v/soils/folder/108071141504) dataset, most up-to-date, high resolution.] 
+* Coarser resolution [STATSGO2](https://www.nrcs.usda.gov/wps/portal/nrcs/detail/soils/survey/geo/?cid=nrcs142p2_053629) data.  "...a broad-based inventory of soils and non-soil areas" - SSURGO seems far too detailed given our scope, so STATSGO2 should be sufficient ([this presentation](https://nrcs.app.box.com/v/soils/file/643765519602) visualizes the differences).  Also [gNATSGO CONUS download](https://nrcs.app.box.com/v/soils/folder/108071141504).
+* Overview of available soil data [here](https://www.nrcs.usda.gov/wps/portal/nrcs/detail/soils/survey/tools/?cid=nrcseprd1407030).
+* This data, WISEsec3 [here](https://data.isric.org/geonetwork/static/api/records/dc7b283a-8f19-45e1-aaed-e9bd515119bc) also looks interesting, through the HWSD data seems to be largely based on much of this analysis. t presents ‘best’ estimates for: organic carbon content, total nitrogen, C/N ratio, pH(H2O), CECsoil, CECclay, effective CEC, total exchangeable bases (TEB), base saturation, aluminium saturation, calcium carbonate content, gypsum content, exchangeable sodium percentage (ESP), electrical conductivity, particle size distribution (content of sand, silt and clay), proportion of coarse fragments (less than 2 mm), bulk density, and available water capacity (-33 to -1500 kPa); also the dominant soil drainage class.
+
+
+***
+
+## MIRAD 
+
+MIRAD 1km meter 2002, 2007, 2012, 2017 downloaded [here](https://www.sciencebase.gov/catalog/item/5db08e84e4b0b0c58b56e04f).  This is the percent irrigated (based on 250 meter dataset) in a 1 km cell.  I defined a 1 km pixel as irrigated if any of this 1 km cell was listed as irrigated... this flexible definition works in my mind, allows for irrigation expansion in the future - though I should/could test sensitivity to different definitions, e.g. a 50% threshold.
+
+* Brown, J.F., Howard, D.M., Shrestha, D., and Benedict, T.D., 2019, Moderate Resolution Imaging Spectroradiometer (MODIS) Irrigated Agriculture Datasets for the Conterminous United States (MIrAD-US): U.S. Geological Survey data release, https://doi.org/10.5066/P9NA3EO8.
+
+```{r eval=F}
+# 2012 as "baseline"
+mirad_list <- Sys.glob("C:/Users/eburchf/OneDrive - Emory University/Data/MIRAD/mirad1km*.tif")
+mirad <- rast(mirad_list)
+
+# processing for DISES roi
+state_list <- c("ME", "NH", "VT", "MA", "RI", "CT", "NY", "PA", "NJ", "DE", "MD", "WV", "VA", "NC", "SC", "KY",
+                "OH", "MI", "WI", "IA", "MN", "MO", "TN", "GA", "AL", "MS", "LA", "AR", "KS", "OK", 
+                "TX", "ND", "NE", "SD", "IL", "IN", "FL", "DC")
+states <- st_read("C:/Users/eburchf/OneDrive - Emory University/Data/SHP/National/states.shp") %>% filter(STATE_ABBR %in% state_list)
+states <- st_transform(states, crs(mirad))
+roi <- vect(st_transform(st_union(states), crs(mirad)))
+
+m <- crop(mirad, roi, mask=T)
+m <- app(m, fun = sum)
+m[m>0] <- 1
+
+writeRaster(m, "./out/hpredictors/mirad.tif")
+```
+
+***
+
+## Topography
+
+To align with the other 1 km datasets, I used the [North American 1-km resolution GRID](https://www.sciencebase.gov/catalog/item/4fb5495ee4b04cb937751d6d). This includes only elevation (m).  I computed slope in ArcGIS using the Spatial Analyst, Slope tool (Output measurement: DEGREE, Method: PLANAR, Z factor: 1, Z unit: METR)
+
+```{r eval=F}
+s <- rast("C:/Users/eburchf/OneDrive - Emory University/Data/DEM/NA_1KM_SLOPE.tif")
+d <- rast("C:/Users/eburchf/OneDrive - Emory University/Data/DEM/NA_1KM.tif")
+topo <- c(s, d)
+
+# processing for DISES roi
+state_list <- c("ME", "NH", "VT", "MA", "RI", "CT", "NY", "PA", "NJ", "DE", "MD", "WV", "VA", "NC", "SC", "KY",
+                "OH", "MI", "WI", "IA", "MN", "MO", "TN", "GA", "AL", "MS", "LA", "AR", "KS", "OK", 
+                "TX", "ND", "NE", "SD", "IL", "IN", "FL", "DC")
+states <- st_read("C:/Users/eburchf/OneDrive - Emory University/Data/SHP/National/states.shp") %>% filter(STATE_ABBR %in% state_list)
+roi <- vect(st_transform(st_union(states), crs(topo)))
+
+topo <- crop(topo, roi, mask=T)
+
+writeRaster(topo, "./out/hpredictors/topo.tif")
+```
+
+Other datasets:
+
+* 30 meter Landfire data, downloadable from [this website](https://www.landfire.gov/version_comparison.php) (LF REMAP LF 2.0.0).  More information on slope data [here](https://www.landfire.gov/slope.php) and on elevation [here](https://www.landfire.gov/elevation.php). I opened in Arc since it was a file geodatabase and wrote out as `LF_slope.tif` and `LF_elevation.tif` in the DEM folder.
+
+## Extract Biophysical Predictors to Crop A/P
+
+First, extract to the absence presence points all biophysical predictors *in their original projection* to preserve data quality. The result here are the final absence presence panels to be used to calibrate the historical biophysical models:
+
+```{r}
+#######################################################################################
+# extract ancillary data to presence/absense dataset for work with POINTS ONLY
+
+for (i in 1:length(crop_names)) {
+  
+  cn <- crop_names[i]
+  print(paste0("Writing out ", cn))
+  extract_predictors(cn) # in DISES_func
+  
+}
+```
+
+## Rasterize Biophysical Predictors
+
+Merging for rasterized predictors requires reprojecting and resampling to world-clim:
+
+```{r eval=F}
+# project everything to WorldClim (reuse in future, easy)
+
+pred_dis <- Sys.glob("./out/hpredictors/*.tif")
+
+wc_ref <- rast("./out/hpredictors/hist_biovars.tif")
+mirado <- rast("./out/hpredictors/mirad.tif")
+hwsdo <- rast("./out/hpredictors/hwsd.tif")
+hwsdo <- hwsdo[[c("T_BULK_DEN", "T_CEC_CLAY", "T_CLAY", "T_GRAVEL", "T_SAND", "T_SILT"
+                  )]]
+topoo <- rast("./out/hpredictors/topo.tif")
+
+# resample assumes same projection
+mirad <- project(mirado, crs(wc_ref), method = "near") # nearest neighbor b/c categorical
+hwsd <- project(hwsdo, crs(wc_ref), method = "bilinear")
+topo <- project(topoo, crs(wc_ref), method = "bilinear")
+ 
+# #############################################################
+# writeRaster(mirad, "./out/hpredictors/epsg5070/mirad_np.tif")
+# writeRaster(hwsd, "./out/hpredictors/epsg5070/hwsd_np.tif")
+# writeRaster(topo, "./out/hpredictors/epsg5070/topo_np.tif")
+
+mirad2 <- terra::resample(x = mirad, y = wc_ref[[1]], method = "near")
+hwsd2 <- resample(x = hwsd, y = wc_ref, method = "bilinear")
+topo2 <- resample(x = topo, y = wc_ref, method='bilinear')
+names(mirad2) <- "IRRIG"
+
+all_preds <- c(wc_ref, mirad2, hwsd2, topo2)
+# writeRaster(all_preds, "./out/hpredictors/epsg5070/all_bio_preds.tif", overwrite=T)  #this is not final,updating in next lines of code with IRRIG_std
+
+writeRaster(mirad2, "./out/hpredictors/epsg5070/mirad.tif", overwrite=TRUE)
+writeRaster(hwsd2, "./out/hpredictors/epsg5070/hwsd.tif", overwrite=TRUE)
+writeRaster(topo2, "./out/hpredictors/epsg5070/topo.tif", overwrite=TRUE)
+
+# (AP, all_of(names), IRRIG, T_BULK_DEN, T_CEC_CLAY, T_CLAY, T_GRAVEL, T_SAND, T_SILT, AWC_CLASS,                 NA_1KM_SLOPE, NA_1KM) 
+
+# check that this also works in FUTURE
+# hwsd <- rast("./out/fpredictors/hwsd.tif")
+# mirad <- rast("./out/fpredictors/mirad.tif")
+# topo <- rast("./out/fpredictors/topo.tif")
+# wc_ref <- rast("./out/fpredictors/ssp245_2021-2040.tif")
+
+
+test <- c(wc_ref, hwsd, mirad, topo)
+
+## Lokendra edit--
+
+raw_coa <- clean_census("./data/lr/ag_data_2012_17_average.csv")
+raw_coa <- merge(counties %>% select(GEOID), raw_coa)
+#raw_coa <- st_transform(raw_coa, crs(mirad))
+
+mirad250_12 <- rast("./data/Irrigation/data/MIRAD/mirad250_12v4.tif")
+mirad250_17 <- rast("./data/Irrigation/data/MIRAD/mirad250_17v4.tif")
+mirad250_agg = mirad250_12 +mirad250_17 
+mirad250_agg[mirad250_agg>0] <- 1
+
+
+#both mirad250 and raw_coa should have same crs==> in meters
+raw_coa <- st_transform(raw_coa, crs(mirad250_agg))
+
+irrigated_counts <- extract(mirad250_agg, raw_coa, fun = sum, na.rm = TRUE)
+
+# Convert pixel count to acres (1 pixel = 250m × 250m ≈ 15.44 acres)
+raw_coa$IRRIG_acres <- irrigated_counts[, 2] * 15.44  # Column 2 contains sum of pixels
+
+raw_coa$IRRIG_std <- raw_coa$IRRIG_acres / raw_coa$tot_cropland_acre
+
+raw_coa$IRRIG_std <- pmin(raw_coa$IRRIG_std, 1)  #making sure it is not >1
+
+# IRRIG_std is the county scale irrigation per unit crop acres, now it needs to be merged with panel df for each crops
+
+write.csv(
+  x = st_drop_geometry(raw_coa)[c("GEOID", "IRRIG_std")],
+  file = "./out/hpredictors/MIRAD_IRRIG_std.csv",
+  row.names = FALSE
+)
+
+# Saving rds so that GEOID remains character
+saveRDS(raw_coa[c("GEOID", "IRRIG_std")], file = "./out/hpredictors/MIRAD_IRRIG_std.RDS")
+
+IRRIG_std_ras <- rasterize(raw_coa, mirad250_agg, field = "IRRIG_std")  #making it 250 m raster
+
+IRRIG_std_ras <- project(IRRIG_std_ras, crs(wc_ref), method = "bilinear")
+ 
+IRRIG_std_ras2 <- terra::resample(x = IRRIG_std_ras, y = wc_ref[[1]], method = "bilinear")
+
+names(IRRIG_std_ras2) <- "IRRIG_std"
+
+all_preds <- c(wc_ref, mirad2, hwsd2, topo2, IRRIG_std_ras2)
+writeRaster(all_preds, "./out/hpredictors/epsg5070/all_bio_preds.tif", overwrite=T)
+
+writeRaster(IRRIG_std_ras2, "./out/hpredictors/epsg5070/mirad_std.tif")
+#writing the same to fpredictor as I dont know where it comes from,,LR
+writeRaster(IRRIG_std_ras2, "./out/fpredictors/mirad_std.tif")
+
+
+
+```
+
+
+
+
+
+***
+
+# Extract Agricultural Predictors 
+
+## IWU Konar
+
+```{r eval=F}
+# Each spreadsheet provides the total Irrigation Water Use (IWU) by water source, county, crop, and year. The time period is 2008 to 2020. Irrigation volumes are given in units of km3. 
+# 
+# Within each spreadsheet, the rows are organized by the GEOID of the counties within the CONUS. The columns indicate the water source, crop, and year. There are three crop categories listed as "other_sctg2", "other_sctg3", and "other_sctg4". These are: 
+# 
+# Other SCTG 2 = Other Grains
+# Other SCTG 3 = Other Produce
+# Other SCTG 4 = Other Animal Feed
+
+flist <- Sys.glob("./data/lr/IWU_Konar/GroundwaterDepletion/*.csv")
+years <- 2009:2019
+
+# HAY PASTURE = OTHER_FEED (SCTG 4)
+# PECANS = FRUITVEG (SCTG 3)
+
+all_crops <- list()
+
+for (c in 1:length(crop_names)) {
+  
+  crop <- crop_names[c]
+  crop <- ifelse(crop %in% c("HAY", "PASTURE"), "OTHER_FEED", crop)
+  crop <- ifelse(crop == "PECANS", "FRUITVEG", crop)
+  
+  print(crop)
+  
+  allcols <- list()
+  
+  for (y in 1:length(years)) {
+    
+    t <- read.csv(flist[y])
+    t$GEOID <- str_pad(t$GEOID, width = 5, side = "left", pad="0")
+    t <- t %>% filter(GEOID %in% unique(counties$GEOID)) # b/c of differences in number of geoids
+    t <- t %>% arrange(GEOID)
+    colnames(t) <- c("GEOID", "BARLEY", "CORN", "COTTON", "MILLET", "OATS", "OTHER_GRAINS", "FRUITVEG", "OTHER_FEED",
+                     "PEANUTS", "POTATOES", "PULSES", "RAPESEED", "RICE", "RYE", "SORGHUM", "SOY", "SUGARBEETS", "SUNFLOWER", "SWEETPOTATOES", "WHEAT")
+    
+    one <- t %>% select(crop)
+    allcols[[y]] <- one
+    
+  }
+  
+  allcols2 <- do.call("cbind.data.frame", allcols)
+  total <- as.data.frame(rowSums(allcols2)/ncol(allcols2))  # Add up deplection through time or divide by number of years to get average rate
+  colnames(total) <- crop_names[c]
+  
+  all_crops[[c]] <- total
+  
+  
+}
+
+out_gw <- do.call("cbind.data.frame", all_crops )
+
+t <- read.csv(flist[1])
+t$GEOID <- str_pad(t$GEOID, width = 5, side = "left", pad="0")
+t <- t %>% filter(GEOID %in% unique(counties$GEOID)) # b/c of differences in number of geoids
+t <- t %>% arrange(GEOID)
+
+out_gw$GEOID <- t$GEOID
+saveRDS(out_gw, "./data/lr/Konar_GWD.RDS")
+
+#### Withdrawals 
+
+flist <- Sys.glob("./data/lr/IWU_Konar/GroundwaterWithdrawals/*.csv")
+years <- 2009:2019
+
+# HAY PASTURE = OTHER_FEED
+# PECANS = FRUITVEG
+
+all_crops <- list()
+
+for (c in 1:length(crop_names)) {
+  
+  crop <- crop_names[c]
+  crop <- ifelse(crop %in% c("HAY", "PASTURE"), "OTHER_FEED", crop)
+  crop <- ifelse(crop == "PECANS", "FRUITVEG", crop)
+  
+  print(crop)
+  
+  allcols <- list()
+  
+  for (y in 1:length(years)) {
+    
+    t <- read.csv(flist[y])
+    t$GEOID <- str_pad(t$GEOID, width = 5, side = "left", pad="0")
+    t <- t %>% filter(GEOID %in% unique(counties$GEOID)) # b/c of differences in number of geoids
+    t <- t %>% arrange(GEOID)
+    colnames(t) <- c("GEOID", "BARLEY", "CORN", "COTTON", "MILLET", "OATS", "OTHER_GRAINS", "FRUITVEG", "OTHER_FEED",
+                     "PEANUTS", "POTATOES", "PULSES", "RAPESEED", "RICE", "RYE", "SORGHUM", "SOY", "SUGARBEETS", "SUNFLOWER", "SWEETPOTATOES", "WHEAT")
+    
+    one <- t %>% select(crop)
+    allcols[[y]] <- one
+    
+  }
+  
+  allcols2 <- do.call("cbind.data.frame", allcols)
+  total <- as.data.frame(rowSums(allcols2)/ncol(allcols2))  # Add up deplection through time or divide by number of years to get average rate
+  colnames(total) <- crop_names[c]
+  
+  all_crops[[c]] <- total
+  
+  
+}
+
+out_gw <- do.call("cbind.data.frame", all_crops )
+
+t <- read.csv(flist[1])
+t$GEOID <- str_pad(t$GEOID, width = 5, side = "left", pad="0")
+t <- t %>% filter(GEOID %in% unique(counties$GEOID)) # b/c of differences in number of geoids
+t <- t %>% arrange(GEOID)
+
+out_gw$GEOID <- t$GEOID
+saveRDS(out_gw, "./data/lr/Konar_GWW.RDS")  
+
+### Surface water
+
+flist <- Sys.glob("./data/lr/IWU_Konar/SurfaceWaterWithdrawals/*.csv")
+years <- 2009:2019
+
+# HAY PASTURE = OTHER_FEED
+# PECANS = FRUITVEG
+
+all_crops <- list()
+
+for (c in 1:length(crop_names)) {
+  
+  crop <- crop_names[c]
+  crop <- ifelse(crop %in% c("HAY", "PASTURE"), "OTHER_FEED", crop)
+  crop <- ifelse(crop == "PECANS", "FRUITVEG", crop)
+  
+  print(crop)
+  
+  allcols <- list()
+  
+  for (y in 1:length(years)) {
+    
+    t <- read.csv(flist[y])
+    t$GEOID <- str_pad(t$GEOID, width = 5, side = "left", pad="0")
+    t <- t %>% filter(GEOID %in% unique(counties$GEOID)) # b/c of differences in number of geoids
+    t <- t %>% arrange(GEOID)
+    colnames(t) <- c("GEOID", "BARLEY", "CORN", "COTTON", "MILLET", "OATS", "OTHER_GRAINS", "FRUITVEG", "OTHER_FEED",
+                     "PEANUTS", "POTATOES", "PULSES", "RAPESEED", "RICE", "RYE", "SORGHUM", "SOY", "SUGARBEETS", "SUNFLOWER", "SWEETPOTATOES", "WHEAT")
+    
+    one <- t %>% select(crop)
+    allcols[[y]] <- one
+    
+  }
+  
+  allcols2 <- do.call("cbind.data.frame", allcols)
+ total <- as.data.frame(rowSums(allcols2)/ncol(allcols2))  # Add up deplection through time or divide by number of years to get average rate
+  colnames(total) <- crop_names[c]
+  
+  all_crops[[c]] <- total
+  
+  
+}
+
+out_gw <- do.call("cbind.data.frame", all_crops )
+
+t <- read.csv(flist[1])
+t$GEOID <- str_pad(t$GEOID, width = 5, side = "left", pad="0")
+t <- t %>% filter(GEOID %in% unique(counties$GEOID)) # b/c of differences in number of geoids
+t <- t %>% arrange(GEOID)
+
+out_gw$GEOID <- t$GEOID
+saveRDS(out_gw, "./data/lr/Konar_SWW.RDS")  
+
+```
+
+
+## Extract Agricultural Predictors to Crop A/P
+
+* Including Cao N and P data that is directly extracted to points
+* Notes about NAICS:
+emp = number of employees; ap = annual payroll ($1000); and est = number of establishments. 
+There are a total of 9 naics codes based on different industry types like dairy, animal slaughtering, etc.
+There are two ways to incorporate this data. One is to make columns for each naics code with each of the three variables (emp, ap, est), this way we will end up with 9*3 = 27 columns. Another is to have only three columns (emp, ap, est) by summing all 9 naics values for a county, this way we don't have a separate column for each naics code, but 3 columns where all naics codes are aggregated. 
+
+```{r eval=F}
+for (i in 1:length(crop_names)) {
+  print(crop_names[i])
+  #build_ag_panel(crop = crop_names[i])
+  build_ag_panel2(crop = crop_names[i])  #build_ag_panel2 for model 2.0
+}
+
+```
+
+## Rasterize Agricultural Predictors
+
+We also need to rasterize agricultural predictors to generate probability surfaces to projection of WC:
+
+```{r eval=F}
+# first load data that's consistent across all crops
+
+#wc_ref <- rast("./out/fpredictors/ssp245_2021-2040.tif")
+wc_ref <- rast("./out/hpredictors/hist_biovars.tif")
+roi <- st_as_sf(st_transform(roi, crs(wc_ref)))
+
+# load biophysical data
+bpreds <- rast("./out/hpredictors/epsg5070/all_bio_preds.tif") # reprojected to WorldClim, etc.
+
+# extract and merge to Cao
+flist <- Sys.glob("./data/lr/CaoN/*.tif")[160:166] # 2009 to 2015
+n <- rast(flist)
+nm <- mean(n)
+caoN <- project(nm, crs(wc_ref))
+caoN <- crop(caoN, roi, mask=T)
+caoN <- resample(x = caoN, wc_ref, method = "bilinear")
+names(caoN) <- c("Cao_fert_N")
+writeRaster(caoN, "./out/hpredictors/epsg5070/caoN.tif", overwrite=T)
+
+flist <- Sys.glob("./data/lr/CaoP/Gridded_P_fertilizer_application_rate_county_4km_4km_1970_2021_g_P_m-2/*.tif")[40:50] 
+n <- rast(flist)
+nm <- mean(n)
+caoP <- project(nm, crs(wc_ref))
+caoP <- crop(caoP, roi, mask=T)
+caoP <- resample(x = caoP, wc_ref, method = "bilinear")
+names(caoP) <- c("Cao_fert_P")
+writeRaster(caoP, "./out/hpredictors/epsg5070/caoP.tif", overwrite=T)
+
+
+
+# rasterize census data
+
+# using new ag_data_std_2012_17.csv file, that does not have naics; also have corrected columns of fertilzer and 500k; 
+#  coa <- clean_census("./data/lr/ag_data_std_2012_17.csv")
+coa <- clean_census("E:/DISES/quantitative_data/data_input_RF_2/ag_data_std_2012_17.csv")
+coa <- merge(counties %>% select(GEOID), coa) %>% select(-c(GEOID))
+coa <- st_transform(coa, crs(wc_ref))
+
+
+names <- colnames(coa)
+out <- list()
+stop <- ncol(coa)-1
+
+for (i in 1:stop) {
+  print(names[i])
+  attr <- rasterize(x = coa, y = wc_ref[[1]], names[i])
+  out[[i]] <- attr
+}
+
+coa_ras <- rast(out)
+
+#writeRaster(coa_ras, "./out/hpredictors/epsg5070/coa.tif", overwrite=T)
+#for model 2.0
+writeRaster(coa_ras, "./out/hpredictors/epsg5070/coa_2.tif", overwrite=T)
+
+all_ag_preds <- c(coa_ras, caoP, caoN, bpreds)
+#writeRaster(all_ag_preds, "./out/hpredictors/epsg5070/all_ag_preds.tif", overwrite=T)
+writeRaster(all_ag_preds, "./out/hpredictors/epsg5070/all_ag_preds_2.tif", overwrite=T)  #for model 2
+
+
+
+# the last Konar data is crop specific, so I write out a raster for EACH crop, which I add back when running the RF on predictor rasters
+
+counties_prj <- st_transform(counties, crs(wc_ref))
+
+# for (crop in crop_names_new) {
+for (crop in temp_crops) {
+  
+  gww <- readRDS("./data/lr/Konar_GWW.RDS") %>% select(crop, GEOID)
+  colnames(gww) <- c("KONAR_GWW", "GEOID")
+  sww <- readRDS("./data/lr/Konar_SWW.RDS") %>% select(crop, GEOID)
+  colnames(sww) <- c("KONAR_SWW", "GEOID")
+  gwd <- readRDS("./data/lr/Konar_GWD.RDS") %>% select(crop, GEOID)
+  colnames(gwd) <- c("KONAR_GWD", "GEOID")
+  all_konar <- merge(gww, sww, by = "GEOID", all = T)
+  all_konar <- merge(all_konar, gwd, by = "GEOID", all = T)
+  
+  
+  tc_crp <- read.csv(paste0("./data/crop_harv_acres/", tolower(crop), "_acres_pivot.csv"), check.names = FALSE)
+  tc_crp$GEOID <- str_pad(tc_crp$GEOID, width = 5, side = c("left"), pad = 0)
+  temp_yrs = intersect(as.character(2009:2019), names(tc_crp)) #only consider years from 2009 to 2018
+  
+  tc_crp_mean <- tc_crp %>%
+    select(GEOID, all_of(temp_yrs)) %>%   
+    mutate(mean_crop_acres = rowMeans(across(all_of(temp_yrs)), na.rm = TRUE)) %>%
+    select(GEOID, mean_crop_acres)
+  
+  all_konar <- merge(all_konar, tc_crp_mean, by = "GEOID", all.x = TRUE)
+  all_konar$KONAR_GWW <- all_konar$KONAR_GWW/all_konar$mean_crop_acres
+  all_konar$KONAR_GWD <- all_konar$KONAR_GWD/all_konar$mean_crop_acres
+  all_konar$KONAR_SWW <- all_konar$KONAR_SWW/all_konar$mean_crop_acres
+  #replacing all NAs with 0
+  all_konar[is.na(all_konar)] <- 0  
+  all_konar <- merge(counties_prj %>% select(GEOID), all_konar, by = "GEOID") %>% select(-c(GEOID, mean_crop_acres))
+
+  
+  
+  out <- list()
+  for (i in 1:(ncol(all_konar)-1)) {
+    attr <- rasterize(x = all_konar, y = wc_ref[[1]], colnames(all_konar)[i])
+    out[[i]] <- attr
+  }
+  konar_ras <- rast(out)
+  #writeRaster(konar_ras, paste0("./out/hpredictors/epsg5070/konar_", crop, ".tif"), overwrite=T)
+  writeRaster(konar_ras, paste0("./out/hpredictors/epsg5070/konar_norm_", crop, ".tif"), overwrite=T)
+  
+
+}
+
+####
+#rasterize crop specific price and naics data
+
+counties_prj <- st_transform(counties, crs(wc_ref))
+# for (crop in crop_names_new) {
+for (crop in temp_crops) {
+  
+  # crop <- crop_names[c]
+  crop1 <- ifelse(toupper(crop) == "SOY", "soybean", tolower(crop))
+  naics_est = clean_census(paste0("E:/DISES/NAICS/crop_specific_naics_est/est_ct_adj_", crop1, "_08_23.csv"))
+  naics_est_mean <- data.frame(
+    GEOID = naics_est$GEOID,
+    mean_est = rowMeans(naics_est[, -1], na.rm = TRUE)
+  )
+  
+  tc <- read.csv("./data/GEOID_tot_cropland.csv")
+  tc$GEOID <- str_pad(tc$GEOID, width = 5, side = "left", pad = "0")
+  
+  naics_est_mean <- merge(tc, naics_est_mean, by = "GEOID")
+  naics_est_mean$mean_est_std <- naics_est_mean$mean_est / naics_est_mean$tot_cropland_acre
+  
+  
+  # making sure all counties are included, those wiht NAs, replaced with 0
+  naics_est_mean <- merge(counties_prj %>% select(GEOID), naics_est_mean, by = "GEOID", all.x = TRUE) %>% select(-c(GEOID)) #make sure all counties are there
+  naics_est_mean$mean_est[is.na(naics_est_mean$mean_est)] <- 0
+  naics_est_mean$mean_est_std[is.na(naics_est_mean$mean_est_std)] <- 0  
+  
+  out <- list()
+  for (i in 1:(ncol(naics_est_mean)-1)) {
+    attr <- rasterize(x = naics_est_mean, y = wc_ref[[1]], colnames(naics_est_mean)[i])
+    out[[i]] <- attr
+  }
+  naics_est_mean_ras <- rast(out)
+  writeRaster(naics_est_mean_ras, paste0("./out/hpredictors/epsg5070/NAICS_EST_", crop, ".tif"), overwrite=T)
+  
+  
+  # adding crop price information
+  crop11 <- ifelse(toupper(crop) == "SOY", "SOYBEANS", toupper(crop))
+  if (!(crop11 %in% c("PASTURE", "FRUITVEG"))) {
+    price_crp = clean_census(paste0("E:/DISES/quantitative_data/price_received_mrkt_yr_pivot_avg_08_19_ct_", crop11, ".csv"))  %>% select(GEOID, PRICE)
+    
+    price_crp <- merge(counties_prj %>% select(GEOID), price_crp, by = "GEOID") %>% select(-c(GEOID))
+    out <- list()
+    for (i in 1:(ncol(price_crp)-1)) {
+      attr <- rasterize(x = price_crp, y = wc_ref[[1]], colnames(price_crp)[i])
+      out[[i]] <- attr
+    }
+    price_crp_ras <- rast(out)
+    writeRaster(price_crp_ras, paste0("./out/hpredictors/epsg5070/price_", crop, ".tif"), overwrite=T)
+  
+  }
+
+}
+# below code standardizes KONAR values then merge with other ag preds and get county aggregate
+# doinf for all crops now, need to do it for all crops
+# Olny 4 crops old code is in the next section
+for (crop in crop_names_new) {
+  
+  konar_ras <- rast(paste0("./out/hpredictors/epsg5070/konar_norm_", crop, ".tif"))
+  
+  counties_prj <- st_transform(counties, crs(wc_ref))
+  
+  naics_est_mean_ras <- rast(paste0("./out/hpredictors/epsg5070/NAICS_EST_", crop, ".tif"))
+  
+  if (!(crop %in% c("PASTURE", "FRUITVEG"))) {
+  price_ras =  rast(paste0("./out/hpredictors/epsg5070/price_", crop, ".tif"))
+  all_ag_pred_crop = c(all_ag_preds, konar_ras, naics_est_mean_ras, price_ras) 
+  }
+  
+  else{
+      
+  all_ag_pred_crop = c(all_ag_preds, konar_ras, naics_est_mean_ras) 
+  }
+  
+  
+  county_agg_all_ag_pred = terra::extract(all_ag_pred_crop, counties_prj, fun = mean, na.rm = TRUE)
+  county_agg_all_ag_pred[is.na(county_agg_all_ag_pred)] <- 0
+  county_agg_all_ag_pred <- cbind(counties_prj["GEOID"], county_agg_all_ag_pred)
+  county_agg_all_ag_pred = county_agg_all_ag_pred %>% select(-ID)
+  
+  #xx = terra::extract(all_ag_pred_crop, counties_prj, fun = mean, na.rm = TRUE)
+  
+  write.csv(st_drop_geometry(county_agg_all_ag_pred),
+            file = paste0("./out/county_agg_mod2/", crop, "_AGG.csv"),
+            row.names = FALSE)
+
+  saveRDS(county_agg_all_ag_pred, file = paste0("./out/county_agg_mod2/", crop, "_AGG.RDS"))
+  
+}
+
+# below code standardizes KONAR values then merge with other ag preds and get county aggregate
+#only doinf for 4 crops now, need to do it for all crops
+crop_names_4_caps <- c("CORN","SORGHUM",  "SOY", "WHEAT")
+for (c in 1:length(crop_names_4_caps)) {
+  
+  crop <- crop_names_4_caps[c]
+  gww <- readRDS("./data/lr/Konar_GWW.RDS") %>% select(crop, GEOID)
+  colnames(gww) <- c("KONAR_GWW", "GEOID")
+  sww <- readRDS("./data/lr/Konar_SWW.RDS") %>% select(crop, GEOID)
+  colnames(sww) <- c("KONAR_SWW", "GEOID")
+  gwd <- readRDS("./data/lr/Konar_GWD.RDS") %>% select(crop, GEOID)
+  colnames(gwd) <- c("KONAR_GWD", "GEOID")
+  all_konar <- merge(gww, sww, by = "GEOID", all = T)
+  all_konar <- merge(all_konar, gwd, by = "GEOID", all = T)
+  
+  #all_konar <- merge(counties_prj %>% select(GEOID), all_konar, by = "GEOID") 
+  all_konar <- left_join(counties_prj %>% select(GEOID, geometry), all_konar, by = "GEOID")
+  
+  # tc <- read.csv("./data/GEOID_tot_cropland.csv")
+  # tc$GEOID <- str_pad(tc$GEOID, width = 5, side = c("left"), pad = 0)
+
+  tc <- read.csv(paste0("G:/data/MIRCA_OS/County_Irrigation_ha_", tools::toTitleCase(tolower(crop)), "_2010_15_avg.csv"))
+  tc$ir_sum <- tc$ir_sum * 2.47105
+  tc$rf_sum <- tc$rf_sum * 2.47105
+  tc$tot <- tc$ir_sum + tc$rf_sum
+  
+  tc$GEOID <- sprintf("%05d", as.integer(tc$GEOID))
+  
+  all_konar_std <- merge(all_konar, tc, by = "GEOID", all.x=T)
+  all_konar_std$KONAR_GWW <- all_konar_std$KONAR_GWW/all_konar_std$tot
+  all_konar_std$KONAR_GWD <- all_konar_std$KONAR_GWD/all_konar_std$tot
+  all_konar_std$KONAR_SWW <- all_konar_std$KONAR_SWW/all_konar_std$tot
+  
+  all_konar_std$KONAR_GWW[is.infinite(all_konar_std$KONAR_GWW)] <- 0
+  all_konar_std$KONAR_SWW[is.infinite(all_konar_std$KONAR_SWW)] <- 0
+  all_konar_std$KONAR_GWD[is.infinite(all_konar_std$KONAR_GWD)] <- 0
+  all_konar_std[is.na(all_konar_std)] <- 0
+  all_konar_std <- na.omit(all_konar_std)
+
+# x1 =ggplot(county_agg_all_ag_pred) +
+#   geom_sf(aes(fill = KONAR_GWW)) +
+#   scale_fill_viridis_c(option = "plasma", na.value = "gray90") +
+#   theme_minimal() 
+
+  out <- list()
+  temp_cols = c("KONAR_GWW", "KONAR_SWW", "KONAR_GWD")
+  for (i in 1:length(temp_cols)) {
+    attr <- rasterize(x = all_konar_std, y = wc_ref[[1]], temp_cols[i])
+    out[[i]] <- attr
+  }
+  konar_ras_std <- rast(out)
+  
+  all_ag_pred_crop = c(all_ag_preds, konar_ras_std)
+  county_agg_all_ag_pred = terra::extract(all_ag_pred_crop, counties_prj, fun = mean, na.rm = TRUE)
+  county_agg_all_ag_pred[is.na(county_agg_all_ag_pred)] <- 0
+  county_agg_all_ag_pred <- cbind(counties_prj["GEOID"], county_agg_all_ag_pred)
+  county_agg_all_ag_pred = county_agg_all_ag_pred %>% select(-ID)
+  
+  #xx = terra::extract(all_ag_pred_crop, counties_prj, fun = mean, na.rm = TRUE)
+  
+  write.csv(st_drop_geometry(county_agg_all_ag_pred),
+            file = paste0("./out/county_agg/", crop, "_AGG.csv"),
+            row.names = FALSE)
+
+  saveRDS(county_agg_all_ag_pred, file = paste0("./out/county_agg/", crop, "_AGG.RDS"))
+  
+}
+
+
+```
+
+***
+
+# Archive code
+
+```{r eval=F}
+# Extract predictors to AP data
+extract_predictors_archive <- function(crop_name) {
+  
+  ap <- readRDS(paste0("./out/crop_ap/", crop_name, "_AP.RDS"))
+  # pred_list <- Sys.glob("./out/hpredictors/*.tif") 
+  pred <- rast("./out/hpredictors/all_bio_preds.tif")
+  ext <-  terra::extract(pred, ap)
+  ext <- ext %>% select(-c(ID))
+  ext <- cbind(ap, ext)
+
+  # for (i in 1:length(pred_list)) {
+  #   
+  #   print(pred_list[i])
+  #   pred <- rast(pred_list[i])
+  #   ext <- terra::extract(pred, ap)
+  #   ext <- ext %>% select(-c(ID))
+  #   ap <- cbind(ap, ext)
+  #   
+  # }
+  
+  saveRDS(ext, paste0("./out/", crop_name, ".RDS"))
+  
+}
+
+```
+
+
+```{r eval=F}
+# Fixing Texas - too much data for code above, so made a few tweaks here
+tx <- states %>% filter(STATE_NAME == "Texas")
+txg <- st_make_grid(tx, n = 2)
+txg <- st_as_sf(st_intersection(txg, tx))
+
+plot(st_geometry(tx))
+plot(st_geometry(txg), add = T)
+
+state_name <- "Texas"
+
+#######################################################################################
+# mask for non-agricultural categories and crop to state boundaries
+
+for (i in 1:length(txg)) {
+
+  print(i)
+  shp <- txg[i,]
+
+  # BUILD DATA  
+  print("Loading data...")
+  flist <- sort(Sys.glob(paste0("C:/Users/eburchf/Desktop/Data/CDL/States/*", state_name, ".grd"))) # fix VA thing
+  stack <- rast(flist[3:12]) # 2010-2019, like WorldClim; one decade, allows for hold-out data 
+  crs(stack) <- "epsg:5070"
+  names(stack) <- str_split(names(stack), "_30", simplify=T)[,1]
+  
+  # APPLY STATE AND AG MASKS  
+  print("Masking data....")
+  masked <- crop(stack, shp, mask=T)
+  remove(stack, flist, shp)
+  masked[masked %in% non_ag] <- NA
+  
+  # SAVE RASTER
+  print("Saving data....")
+  writeRaster(masked, paste0("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/ag_mask_state/", state_name, i, ".tif"), overwrite=T)
+  
+}
+
+tx_sample <- list()
+
+for (i in 1:4) {
+  print(i)
+  masked <- rast(paste0("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/ag_mask_state/", state_name, i, ".tif"))[[1]]
+  total_ag <- length(masked[!is.na(masked)])
+  tx_sample[[i]] <- total_ag
+
+}
+
+tx_sample <- do.call("rbind.data.frame", tx_sample)
+colnames(tx_sample) <- "AG"
+saveRDS("./out/tx_sample.RDS")
+tx_sample <- readRDS("./out/tx_sample.RDS")
+
+# count number of pixels in each part of state
+prop_pix <- 0.10 # first sampling threshold to move from raster to data.frame
+tx_sample$N <- round(prop_pix * as.numeric(tx_sample$AG)) # sampling 5 % of agricultural pixels randomly in each state
+
+
+for (i in 1:4) {
+  
+  masked <- rast(paste0("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/ag_mask_state/", state_name, i, ".tif"))
+  n <- tx_sample %>% slice(i) %>% pull(N)
+ 
+   # SAMPLE RANDOM POINTS  
+  print("Making data.frame....")
+  sample_df <- spatSample(masked, size = n, method = "random", as.df = T, 
+                          na.rm = T, xy = T, values = T, exhaustive = T) # set ext to F for Texas and Florida and Michigan
+  sample_df$STATE <- state_name
+  rownames(sample_df) <- NULL
+  
+  print("Saving RDS...")
+  saveRDS(sample_df, paste0("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/", state_name, i, "_RS_10p.RDS"))
+  remove(sample_df, masked)
+  gc()
+  
+}
+
+
+lulc_list <- Sys.glob("C:/Users/eburchf/Desktop/Data/CDL/DISES_out/Texas*_RS_10p.RDS") # add _RS
+
+for (i in 1:length(lulc_list)) {
+  
+  print(paste0("Loading data for ", lulc_list[i]))
+  st <- readRDS(lulc_list[i]) 
+  
+  print("Counting crops for sample...")
+  for (c in 1:length(cdl_list)) {
+    st[,names(cdl_list)[[c]]] <- rowSums(sapply(st, `%in%`, cdl_list[[c]]))
+  }
+
+  print("Cleaning and saving...")
+  st <- st %>% select(STATE, names(cdl_list), x, y)
+  saveRDS(st, paste0("./out/state_ap/",st$STATE[1], i, ".RDS"))
+  
+}
+
+# then re-run remaining code in previous chunk
+
+```
+
+
+

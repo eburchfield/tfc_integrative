@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this code or data, please cite the paper and this archive."
+title: "Code and data for: Human systems rival climate in shaping where US crops will be grown"
+version: 1.0.0
+date-released: "2026-12-01"   # set at release
+license: MIT
+repository-code: "https://github.com/[OWNER]/dises-cropscapes-2050"   # set when the repository is created
+doi: "10.5281/zenodo.[ID]"   # set after the Zenodo release
+authors:
+  - family-names: Burchfield
+    given-names: Emily
+    affiliation: Emory University
+    orcid: "https://orcid.org/[ORCID]"
+  - family-names: Rissing
+    given-names: Andrea
+  - family-names: Jackson-Smith
+    given-names: Douglas
+  - family-names: Basche
+    given-names: Andrea
+  - family-names: Rathore
+    given-names: Lokendra
+  - family-names: McWherter
+    given-names: Brooke
+  - family-names: Kumar
+    given-names: Kaustubh
+  - family-names: Desai
+    given-names: Kanchi
+keywords: [agricultural land use, land-use projection, Delphi, participatory modeling, random forest, SHAP, United States]

@@ -1,0 +1,15 @@
+item,unit,present_value,n,median_2050,q1_2050,q3_2050,cov,relative_change_pct
+Beginning farmers (share of operators),%,30.0,26,30.0,27.0,33.0,0.1863,0.0
+Carbon credit payments,USD,18.0,26,20.0,14.0,28.75,0.8634,11.1111
+Corn used for ethanol,%,36.0,26,35.0,28.25,40.0,0.2629,-2.7778
+Cropland in CRP,%,8.0,26,7.0,6.0,10.0,0.5056,-12.5
+Farm sales by large farms,%,79.0,26,90.0,85.25,90.0,0.0405,13.9241
+Farm sales from livestock,%,48.3,25,47.1,44.8,50.0,0.1448,-2.4845
+Farmland in crop insurance,%,61.0,26,77.5,70.0,84.25,0.2368,27.0492
+Farmland operated by renters,%,39.0,26,42.0,40.0,45.0,0.1617,7.6923
+Farmland operated by small farms,%,42.0,26,30.0,24.25,30.0,0.2799,-28.5714
+Hired farmworkers,millions,2.18,26,1.945,1.275,2.0,0.4615,-10.7798
+N rate on corn,lb/acre,150.0,26,164.0,150.0,180.0,0.1584,9.3333
+P rate on corn,lb/acre,64.0,25,65.0,60.0,66.0,0.1696,1.5625
+Per capita meat demand,lb/person,225.0,25,206.0,200.0,225.0,0.1684,-8.4444
+Socially disadvantaged operators,%,7.7,26,8.0,7.25,9.75,0.1729,3.8961
