@@ -4,7 +4,7 @@ title: "Code and data for: Human systems rival climate in shaping where US crops
 version: 1.0.0
 date-released: "2026-12-01"   # set at release
 license: MIT
-repository-code: "https://github.com/[OWNER]/dises-cropscapes-2050"   # set when the repository is created
+repository-code: "https://github.com/eburchfield/tfc_integrative"   # set when the repository is created
 doi: "10.5281/zenodo.[ID]"   # set after the Zenodo release
 authors:
   - family-names: Burchfield
