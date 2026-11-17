@@ -9,8 +9,8 @@ central and eastern US states, attributes them with SHAP, and projects them to 2
 futures: climate-only, stakeholder-informed (national Delphi expectations) and place-informed (state Delphi
 expectations in Georgia, Nebraska and Ohio). Robustness checks are in the paper's SI Notes 1–8.
 
-**Archive:** Zenodo DOI [to be added at release]. The county panels the models were trained on are archived
-with the predictor data of Rathore et al. (2026). The fitted forests and the 2.5-arcminute predictor stacks are
+**Archive:** https://doi.org/10.5281/zenodo.20693972 (Zenodo, all versions). The county panels the models were trained
+on are archived there with the predictor data of Rathore et al. (2026), in v2. The fitted forests and the 2.5-arcminute predictor stacks are
 too large to archive and are available from the authors on request; see `data/README.md` for what is where.
 
 ## Repository layout

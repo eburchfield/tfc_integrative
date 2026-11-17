@@ -4,13 +4,12 @@ title: "Code and data for: Human systems rival climate in shaping where US crops
 version: 1.0.0
 date-released: "2026-12-01"   # set at release
 license: MIT
-repository-code: "https://github.com/eburchfield/tfc_integrative"   # set when the repository is created
-doi: "10.5281/zenodo.[ID]"   # set after the Zenodo release
+repository-code: "https://github.com/eburchfield/tfc_integrative"
+doi: "10.5281/zenodo.20693972"
 authors:
   - family-names: Burchfield
     given-names: Emily
     affiliation: Emory University
-    orcid: "https://orcid.org/[ORCID]"
   - family-names: Rissing
     given-names: Andrea
   - family-names: Jackson-Smith
